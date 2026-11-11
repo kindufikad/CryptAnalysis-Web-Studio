@@ -8,6 +8,34 @@ const methods = [
   { value: 'caesar', label: 'Caesar Cipher Brute-force' },
   { value: 'substitution', label: 'Substitution Frequency Analysis' },
 ]
+const HISTORY_KEY = 'analysisHistory'
+
+function formatAnalysisReport(session) {
+  const { result: analysisResult } = session
+  const method = methods.find((item) => item.value === session.algorithm)?.label ?? session.algorithm
+  const frequencies = Object.entries(analysisResult.letter_frequencies ?? {})
+    .map(([letter, count]) => `${letter.toUpperCase()}: ${count}`)
+    .join(', ')
+  const candidates = (analysisResult.candidates ?? [])
+    .map((candidate) => `Shift ${String(candidate.shift).padStart(2, '0')}: ${candidate.plaintext}`)
+
+  return [
+    'CryptAnalysis Web Studio - Analysis Report',
+    `Created: ${new Date(session.createdAt).toLocaleString()}`,
+    `Method: ${method}`,
+    `Ciphertext: ${session.ciphertext}`,
+    `Detected shift: ${analysisResult.shift ?? 'N/A'}`,
+    `Confidence: ${analysisResult.confidence ?? (analysisResult.estimated ? 'Estimated' : 'N/A')}`,
+    '',
+    'Plaintext:',
+    analysisResult.likely_plaintext ?? analysisResult.plaintext,
+    '',
+    `Letter frequencies: ${frequencies || 'Not available'}`,
+    '',
+    'Shift candidates:',
+    ...(candidates.length ? candidates : ['No shift candidates returned.']),
+  ].join('\n')
+}
 
 function App() {
   const [ciphertext, setCiphertext] = useState('')
@@ -15,7 +43,26 @@ function App() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isDarkMode, setIsDarkMode] = useState(true)
+  const [analysisHistory, setAnalysisHistory] = useState(() => {
+    try {
+      const savedHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]')
+      return Array.isArray(savedHistory) ? savedHistory : []
+    } catch {
+      return []
+    }
+  })
+  const [activeSession, setActiveSession] = useState(null)
+  const [copyStatus, setCopyStatus] = useState('')
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('theme')
+    return savedTheme === null ? true : savedTheme === 'dark'
+  })
+
+  function toggleTheme() {
+    const nextIsDarkMode = !isDarkMode
+    localStorage.setItem('theme', nextIsDarkMode ? 'dark' : 'light')
+    setIsDarkMode(nextIsDarkMode)
+  }
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -28,6 +75,22 @@ function App() {
     try {
       const response = await axios.post(API_URL, { ciphertext, algorithm })
       setResult(response.data)
+      const session = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        ciphertext,
+        algorithm,
+        result: response.data,
+        createdAt: new Date().toISOString(),
+      }
+      const updatedHistory = [session, ...analysisHistory].slice(0, 10)
+      setActiveSession(session)
+      setAnalysisHistory(updatedHistory)
+      setCopyStatus('')
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory))
+      } catch {
+        setError('Analysis succeeded, but this session could not be saved in browser history.')
+      }
     } catch (requestError) {
       const detail = requestError.response?.data?.detail
       setError(
@@ -41,10 +104,49 @@ function App() {
     }
   }
 
+  function loadSession(session) {
+    setCiphertext(session.ciphertext)
+    setAlgorithm(session.algorithm)
+    setResult(session.result)
+    setActiveSession(session)
+    setError('')
+    setCopyStatus('')
+  }
+
+  function clearHistory() {
+    setAnalysisHistory([])
+    localStorage.removeItem(HISTORY_KEY)
+  }
+
+  async function copyResults() {
+    if (!activeSession) return
+
+    try {
+      await navigator.clipboard.writeText(formatAnalysisReport(activeSession))
+      setCopyStatus('Results copied')
+    } catch {
+      setCopyStatus('Clipboard unavailable')
+    }
+  }
+
+  function exportReport() {
+    if (!activeSession) return
+
+    const report = new Blob([formatAnalysisReport(activeSession)], { type: 'text/plain;charset=utf-8' })
+    const reportUrl = URL.createObjectURL(report)
+    const link = document.createElement('a')
+    link.href = reportUrl
+    link.download = `cryptanalysis-${activeSession.algorithm}-${activeSession.createdAt.slice(0, 10)}.txt`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(reportUrl), 1000)
+  }
+
   const frequencies = result?.letter_frequencies
     ? Object.entries(result.letter_frequencies)
     : []
-  const highestFrequency = Math.max(1, ...frequencies.map(([, count]) => count))
+  const frequencyTotal = frequencies.reduce((total, [, count]) => total + count, 0)
 
   return (
     <div className="app-shell" data-theme={isDarkMode ? 'dark' : 'light'}>
@@ -76,7 +178,7 @@ function App() {
             aria-label="Toggle color theme"
             aria-pressed={isDarkMode}
             title={`Switch to ${isDarkMode ? 'light' : 'dark'} mode`}
-            onClick={() => setIsDarkMode((currentMode) => !currentMode)}
+            onClick={toggleTheme}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               {isDarkMode ? (
@@ -135,7 +237,9 @@ function App() {
                     </option>
                   ))}
                 </select>
-                <span className="select-caret" aria-hidden="true">⌄</span>
+                <svg className="select-caret" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="m4 6 4 4 4-4" />
+                </svg>
               </div>
 
               <button className="submit-button" type="submit" disabled={!ciphertext.trim() || isSubmitting}>
@@ -180,6 +284,23 @@ function App() {
                 </div>
                 <pre className="plaintext-output">{result.likely_plaintext ?? result.plaintext}</pre>
 
+                <div className="result-actions">
+                  <button className="result-action" type="button" onClick={copyResults}>
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <rect x="7" y="6" width="9" height="11" rx="1.5" />
+                      <path d="M13 6V4.5A1.5 1.5 0 0 0 11.5 3h-7A1.5 1.5 0 0 0 3 4.5v9A1.5 1.5 0 0 0 4.5 15H7" />
+                    </svg>
+                    Copy results
+                  </button>
+                  <button className="result-action" type="button" onClick={exportReport}>
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <path d="M10 2.5v9m0 0 3.5-3.5M10 11.5 6.5 8M3.5 13v3A1.5 1.5 0 0 0 5 17.5h10a1.5 1.5 0 0 0 1.5-1.5v-3" />
+                    </svg>
+                    Export report
+                  </button>
+                  <span className="copy-status" aria-live="polite">{copyStatus}</span>
+                </div>
+
                 {Array.isArray(result.candidates) && result.candidates.length > 0 && (
                   <details className="candidate-details">
                     <summary>
@@ -208,17 +329,19 @@ function App() {
                 {frequencies.length > 0 && (
                   <div className="frequency-section">
                     <div className="frequency-title">
-                      <h3>Letter frequency</h3>
-                      <span>{frequencies.length} LETTERS</span>
+                      <h3>Letter frequency distribution</h3>
+                      <span>{frequencyTotal} TOTAL LETTERS</span>
                     </div>
                     <div className="frequency-list">
                       {frequencies.map(([letter, count]) => (
                         <div className="frequency-row" key={letter}>
                           <span className="frequency-letter">{letter.toUpperCase()}</span>
                           <span className="frequency-track">
-                            <span style={{ width: `${(count / highestFrequency) * 100}%` }} />
+                            <span style={{ width: `${frequencyTotal ? (count / frequencyTotal) * 100 : 0}%` }} />
                           </span>
-                          <span className="frequency-count">{count}</span>
+                            <span className="frequency-count">
+                              {frequencyTotal ? Math.round((count / frequencyTotal) * 100) : 0}% <small>({count})</small>
+                            </span>
                         </div>
                       ))}
                     </div>
@@ -234,6 +357,39 @@ function App() {
             )}
           </section>
         </div>
+
+        <details className="history-panel">
+          <summary className="history-summary">
+            <span className="history-heading">
+              <span className="history-mark" aria-hidden="true">↺</span>
+              <span>Analysis history</span>
+            </span>
+            <span className="history-count">{analysisHistory.length} / 10 SESSIONS</span>
+          </summary>
+          {analysisHistory.length ? (
+            <div className="history-content">
+              <button className="history-clear" type="button" onClick={clearHistory}>
+                Clear history
+              </button>
+              <ul className="history-list">
+                {analysisHistory.map((session) => (
+                  <li key={session.id}>
+                    <button className="history-entry" type="button" onClick={() => loadSession(session)}>
+                      <span className="history-entry-top">
+                        <span>{methods.find((item) => item.value === session.algorithm)?.label ?? session.algorithm}</span>
+                        <time dateTime={session.createdAt}>{new Date(session.createdAt).toLocaleString()}</time>
+                      </span>
+                      <strong>{session.result.likely_plaintext ?? session.result.plaintext}</strong>
+                      <span className="history-ciphertext">{session.ciphertext}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="history-empty">Completed analyses will be saved here on this device.</p>
+          )}
+        </details>
 
         <footer className="workspace-footer">
           <span>CLASSICAL METHODS <i>•</i> LIVE ANALYSIS</span>

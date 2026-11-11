@@ -69,7 +69,7 @@ def crack_caesar(
     ciphertext: str,
     *,
     allow_zero_shift: bool = False,
-) -> dict[str, int | str | list[dict[str, int | str]]]:
+) -> dict[str, int | str | dict[str, int] | list[dict[str, int | str]]]:
     """Return the best-scored guess and all shifts, excluding key 0 by default."""
     candidates = caesar_brute_force(ciphertext)
 
@@ -90,6 +90,7 @@ def crack_caesar(
         "shift": best_candidate["shift"],
         "confidence": confidence,
         "candidates": candidates,
+        "letter_frequencies": frequency_analysis(best_candidate["plaintext"]),
     }
 
 
